@@ -77,18 +77,40 @@ font-size:14px;display:none}.working .w{display:flex;gap:10px;align-items:baseli
 .working .w b{font-weight:600}.side{display:flex;flex-direction:column;gap:18px}
 .drop{border:1.5px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--muted);font-size:13px}
 .drop.over{border-color:var(--accent);color:var(--ink)}.step{font-size:12px;color:var(--muted);margin-top:3px}
+.modes{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:3px;gap:3px;background:var(--bg)}
+.modes button{background:transparent;color:var(--muted);padding:6px 12px;font-weight:600}
+.modes button[aria-pressed="true"]{background:var(--card);color:var(--ink);box-shadow:0 0 0 1px var(--line)}
+body.chat .mode-leads{display:none!important}body:not(.chat) .mode-chat{display:none!important}
+.chatcard{grid-column:1/-1;display:flex;flex-direction:column;height:calc(100vh - 430px);min-height:440px;padding:0}
+.chathead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;
+border-bottom:1px solid var(--line)}.chathead h2{margin:0}
+.msgs{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.bubble{max-width:min(820px,92%);padding:10px 13px;border-radius:12px;white-space:pre-wrap;word-break:break-word;line-height:1.5}
+.bubble.u{align-self:flex-end;background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:4px}
+.bubble.a{align-self:flex-start;background:var(--chip);border-bottom-left-radius:4px}
+.bubble.e{align-self:flex-start;background:var(--badbg);color:var(--bad)}
+.bubble details{margin-bottom:8px;font-size:13px;color:var(--muted)}.bubble details summary{cursor:pointer}
+.bubble .meta{font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:10px;align-items:center}
+.bubble .meta button{background:none;color:var(--accent);padding:0;font-size:11px;font-weight:600}
+.composer{display:flex;gap:10px;padding:12px 16px;border-top:1px solid var(--line);align-items:flex-end}
+.composer textarea{min-height:48px;max-height:220px;resize:none}
+.chatempty{margin:auto;text-align:center;color:var(--muted);max-width:460px;font-size:14px}
+.toggle{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.toggle input{width:auto;margin:0}
 """
 
 PORTAL_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Lead Research</title>
 <style>""" + _STYLE + _DASH_STYLE + r"""</style></head><body>
 <header><div><h1>Lead Research</h1><div class="sub">Company background, registrations and leadership from public sources</div></div>
-<div class="row"><span id="who" class="muted small"></span><a href="/logout" class="small">Sign out</a></div></header>
+<div class="row"><div class="modes" role="group" aria-label="Mode"><button id="m-leads" aria-pressed="true">Lead research</button>
+<button id="m-chat" aria-pressed="false">Ask the model</button></div>
+<span id="who" class="muted small"></span><a href="/logout" class="small">Sign out</a></div></header>
 <main>
 <div id="banner" class="banner off">Checking research engine…</div>
 <div class="gauges" id="gauges"></div>
-<div class="working" id="working"></div>
-<div class="side">
+<div class="working mode-leads" id="working"></div>
+<div class="side mode-leads">
 <section class="card">
  <h2>Import a list</h2>
  <div class="drop" id="drop">Drop a CSV or Excel file here, or <a href="#" id="pick">choose a file</a>.<br>
@@ -108,7 +130,7 @@ PORTAL_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
  <div id="addmsg" class="msg"></div>
 </section>
 </div>
-<section class="card">
+<section class="card mode-leads">
  <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">Leads</h2>
   <div class="row"><select id="batch" style="width:auto;max-width:240px"><option value="">All batches</option></select>
    <select id="filter" style="width:auto"><option value="">All statuses</option><option>queued</option>
@@ -118,6 +140,15 @@ PORTAL_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
  <div class="tablewrap"><table><thead><tr><th>Company</th><th>Status</th><th>Confidence</th><th>Batch</th>
   <th>Updated</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
  <div id="empty" class="muted small" style="padding:12px 4px;display:none">No leads yet.</div>
+</section>
+<section class="card chatcard mode-chat">
+ <div class="chathead"><div><h2>Ask the model</h2><div class="small muted">Your own GPU model · no web access · chats are not saved</div></div>
+  <div class="row"><label class="toggle"><input type="checkbox" id="reason"> Think step by step (slower)</label>
+   <button class="ghost" id="newchat">New chat</button></div></div>
+ <div class="msgs" id="msgs"><div class="chatempty" id="chatempty">Ask anything: draft an email, summarise text you paste in,
+  explain a security finding, brainstorm. For company research use Lead research, which can search the web.</div></div>
+ <div class="composer"><textarea id="prompt" rows="2" maxlength="60000" placeholder="Message the model  (Enter to send, Shift+Enter for a new line)"></textarea>
+  <button id="send">Send</button></div>
 </section>
 </main>
 <div id="detail"><div class="panel" id="panel"></div></div>
@@ -195,7 +226,8 @@ async function loadDashboard(){const b=$('batch').value;
  $('gauges').replaceChildren(...g);
  // banner + working strip
  const bn=$('banner');bn.className='banner '+(e.online?'on':'off');
- bn.textContent=e.online?'Research engine online.':'Research engine offline: new leads wait in the queue and run when it starts.';
+ bn.textContent=e.online?'Research engine online.':(document.body.classList.contains('chat')?
+  'Model offline: start the GPU instance to chat.':'Research engine offline: new leads wait in the queue and run when it starts.');
  const w=$('working');
  if(d.working.length){w.style.display='block';w.replaceChildren(...d.working.map(x=>el('div',{class:'w'},
    el('span',{class:'dot',style:'background:var(--accent)'}),el('b',{text:x.company}),
@@ -297,5 +329,58 @@ function closeLead(){$('detail').style.display='none'}
 $('detail').onclick=ev=>{if(ev.target.id==='detail')closeLead()};
 document.onkeydown=ev=>{if(ev.key==='Escape')closeLead()};
 
+/* ---------- mode switch ---------- */
+function setMode(chat){document.body.classList.toggle('chat',chat);
+ $('m-leads').setAttribute('aria-pressed',String(!chat));$('m-chat').setAttribute('aria-pressed',String(chat));
+ try{history.replaceState(null,'',chat?'#chat':location.pathname)}catch(e){}
+ if(dash)loadDashboard();if(chat)setTimeout(()=>$('prompt').focus(),0)}
+$('m-leads').onclick=()=>setMode(false);$('m-chat').onclick=()=>setMode(true);
+
+/* ---------- chat ---------- */
+let convo=[],streaming=null;
+function scrollMsgs(){const m=$('msgs');m.scrollTop=m.scrollHeight}
+function addBubble(kind,text){$('chatempty').style.display='none';
+ const b=el('div',{class:'bubble '+kind});if(text)b.append(document.createTextNode(text));$('msgs').append(b);scrollMsgs();return b}
+function setSending(on){$('send').textContent=on?'Stop':'Send';$('prompt').disabled=on}
+async function send(){
+ if(streaming){streaming.abort();return}
+ const text=$('prompt').value.trim();if(!text)return;
+ if(dash&&!dash.engine.online){addBubble('e','The model is offline. Start the GPU instance, then try again.');return}
+ convo.push({role:'user',content:text});addBubble('u',text);$('prompt').value='';autosize();
+ const bubble=addBubble('a','');const body=el('span',{class:'typing',text:'…'});bubble.append(body);
+ let answer='',reasoning='',rDetails=null,rText=null,tokens=0,t0=performance.now();
+ streaming=new AbortController();setSending(true);
+ try{
+  const res=await fetch('/ui/api/chat',{method:'POST',signal:streaming.signal,
+   headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({messages:convo,reasoning:$('reason').checked})});
+  if(res.status===401){location.href='/login';return}
+  if(!res.ok){let d='';try{d=(await res.json()).detail}catch(e){}throw new Error(typeof d==='string'&&d?d:Array.isArray(d)?d.map(x=>x.msg).join('; '):'HTTP '+res.status)}
+  const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
+  for(;;){const {value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
+   let i;while((i=buf.indexOf('\n\n'))>=0){const evt=buf.slice(0,i);buf=buf.slice(i+2);
+    if(!evt.startsWith('data:'))continue;let msg;try{msg=JSON.parse(evt.slice(5))}catch(e){continue}
+    if(msg.error)throw new Error(msg.error);
+    if(msg.r){if(!rDetails){rText=el('div',{});rDetails=el('details',{},el('summary',{text:'Reasoning'}),rText);bubble.prepend(rDetails)}
+     reasoning+=msg.r;rText.textContent=reasoning}
+    if(msg.t){answer+=msg.t;body.className='';body.textContent=answer}
+    if(msg.done)tokens=msg.tokens||0;
+    scrollMsgs()}}
+  if(!answer&&!reasoning)throw new Error('The model returned an empty reply.');
+  convo.push({role:'assistant',content:answer});
+  const secs=(performance.now()-t0)/1000;
+  const copy=el('button',{text:'Copy',onclick:async()=>{try{await navigator.clipboard.writeText(answer);copy.textContent='Copied'}catch(e){copy.textContent='Copy failed'}}});
+  bubble.append(el('div',{class:'meta'},el('span',{text:`${secs.toFixed(1)}s${tokens?` · ${tokens} tokens · ${(tokens/secs).toFixed(0)} tok/s`:''}`}),copy))}
+ catch(e){
+  if(e.name==='AbortError'){if(answer){convo.push({role:'assistant',content:answer});bubble.append(el('div',{class:'meta',text:'Stopped'}))}
+   else{bubble.remove();convo.pop()}}
+  else{if(!answer)bubble.remove();convo.pop();addBubble('e',e.message)}}
+ finally{streaming=null;setSending(false);$('prompt').focus()}}
+function autosize(){const t=$('prompt');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,220)+'px'}
+$('send').onclick=send;
+$('prompt').oninput=autosize;
+$('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send()}};
+$('newchat').onclick=()=>{if(streaming)streaming.abort();convo=[];$('msgs').replaceChildren($('chatempty'));$('chatempty').style.display='';$('prompt').focus()};
+
+setMode(location.hash==='#chat');
 loadMe();refresh();
 </script></body></html>"""

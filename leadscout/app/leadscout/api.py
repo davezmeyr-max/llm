@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .chat import router as chat_router
 from .config import settings
 from .state import build_csv, llm_online, store
 from .web import router as web_router
@@ -16,6 +17,7 @@ from .web import router as web_router
 # No /docs, /redoc or /openapi.json: the API can be published on the internet behind Caddy.
 app = FastAPI(title="LeadScout", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(web_router)
+app.include_router(chat_router)
 
 
 def require_token(authorization: str = Header(default="")) -> None:

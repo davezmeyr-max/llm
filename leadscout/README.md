@@ -76,6 +76,10 @@ versus the normal time per lead, and estimated cost per lead and per batch), a "
 the agent's current step, CSV/Excel import (company column plus city/state/website/industry as hints,
 duplicates skipped, up to 5,000 rows), and CSV/Excel export of finished results per batch.
 
+**Ask the model** (switch at the top right) keeps the gauges and turns the rest of the page into a
+chat with your GPU model: streamed replies, optional step-by-step reasoning, stop, copy, new chat.
+It is the bare model, with no web access, and chats are not stored on the server.
+
 Sign-in: your website hands signed-in users over with a short-lived signed link (`SSO_SECRET`), or an
 administrator signs in at `/login` with `ADMIN_PASSWORD`. Both secrets are generated into `.env` by the
 setup script. For Base44 see [integrations/base44.md](integrations/base44.md).

@@ -2,12 +2,16 @@
 # Serves the browser portal (Base44 sign-in handoff or admin password) and the token API.
 # The app itself has no docs/OpenAPI routes and requires a session or token everywhere else.
 {$PUBLIC_HOSTNAME} {
-	encode gzip
+	# Chat replies stream token by token: never compress or buffer them.
+	@compressible not path /ui/api/chat
+	encode @compressible gzip
 
 	request_body {
 		max_size 8MB
 	}
-	reverse_proxy 127.0.0.1:8090
+	reverse_proxy 127.0.0.1:8090 {
+		flush_interval -1
+	}
 
 	header {
 		-Server
