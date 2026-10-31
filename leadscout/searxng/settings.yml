@@ -1,0 +1,21 @@
+# Private SearXNG for LeadScout. Only reachable on 127.0.0.1, so the limiter is off.
+use_default_settings: true
+
+general:
+  instance_name: "leadscout-search"
+
+server:
+  bind_address: "0.0.0.0"
+  limiter: false
+  image_proxy: false
+  # secret_key comes from the SEARXNG_SECRET environment variable
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
