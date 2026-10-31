@@ -703,3 +703,10 @@ def test_stream_completion_parses_vllm_sse(monkeypatch):
     assert events == [{"r": "thinking"}, {"t": "Hi"}, {"t": " there"}, {"done": True, "tokens": 7}]
     assert sent["messages"][0]["role"] == "system" and sent["stream"] is True
     assert sent["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_chat_system_prompt_states_identity():
+    from leadscout.chat import SYSTEM_PROMPT
+
+    assert "Qwen3.6-27B" in SYSTEM_PROMPT and "own GPU server" in SYSTEM_PROMPT
+    assert "not made by Google" in SYSTEM_PROMPT
