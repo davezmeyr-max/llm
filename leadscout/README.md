@@ -83,7 +83,9 @@ LLM_BASE_URL=http://127.0.0.1:8001/v1 LLM_API_KEY=... python -m leadscout.cli "J
 
 ## Tuning
 
-- Different GPU: set `MODEL` before `bootstrap.sh`. On a 48 GB card use an FP8 or AWQ build of Qwen3.6-27B.
+- Hostinger RTX PRO 6000 is a **shared** GPU: pick the **2 Cores / 64 GB RAM** size. The platform parks your GPU
+  memory in system RAM when another tenant needs the card, so the defaults use the NVFP4 build (~18 GB) and claim
+  45% of the GPU. On a dedicated GPU with plenty of RAM: `MODEL=Qwen/Qwen3.6-27B QUANT= GPU_UTIL=0.92`.
 - `AGENT_MAX_STEPS` (default 24) caps tool calls per lead.
 - `LLM_THINKING=true` turns on Qwen's reasoning mode: slower, sometimes better on ambiguous names.
 

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .db import LeadStore
 
-app = FastAPI(title="LeadScout", version="0.1.0")
+app = FastAPI(title="LeadScout", version="0.1.1")
 store = LeadStore(settings.db_path)
 
 

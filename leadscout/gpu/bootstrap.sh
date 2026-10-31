@@ -12,15 +12,28 @@ set -euo pipefail
 : "${LLM_API_KEY:?missing LLM_API_KEY}"
 : "${TUNNEL_KEY_B64:?missing TUNNEL_KEY_B64}"
 
-MODEL="${MODEL:-Qwen/Qwen3.6-27B}"          # bf16 weights ~55 GB; fits a 96 GB card with room for KV cache
+# Defaults suit Hostinger's shared RTX PRO 6000 ("2 Cores / 64 GB RAM" size). On shared GPUs the
+# platform parks your GPU memory in system RAM when another tenant needs the card, so the GPU
+# memory vLLM claims must stay well below system RAM. NVFP4 weights are ~18 GB instead of ~52 GB.
+# Dedicated GPU with plenty of RAM: MODEL=Qwen/Qwen3.6-27B QUANT= GPU_UTIL=0.92
+MODEL="${MODEL:-nvidia/Qwen3.6-27B-NVFP4}"
+QUANT="${QUANT-modelopt}"
 MAX_LEN="${MAX_LEN:-65536}"
-GPU_UTIL="${GPU_UTIL:-0.92}"
+GPU_UTIL="${GPU_UTIL:-0.45}"
 TUNNEL_USER="${TUNNEL_USER:-lstunnel}"
 WORK="${WORK:-$HOME/leadscout-gpu}"
 mkdir -p "$WORK" && cd "$WORK"
 
 echo "==> GPU"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+GPU_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)"
+RAM_MIB="$(free -m | awk '/^Mem:/{print $2}')"
+CLAIM_MIB="$(awk -v g="$GPU_MIB" -v u="$GPU_UTIL" 'BEGIN{printf "%d", g*u}')"
+echo "System RAM ${RAM_MIB} MiB; vLLM will claim ~${CLAIM_MIB} MiB of GPU memory"
+if (( CLAIM_MIB > RAM_MIB * 85 / 100 )); then
+  echo "WARNING: GPU claim exceeds ~85% of system RAM. On a shared GPU the platform cannot park it"
+  echo "         and vLLM will hang at startup. Pick a larger-RAM instance size or lower GPU_UTIL."
+fi
 
 echo "==> SSH tunnel key (pinned host key, no TOFU)"
 install -d -m 700 "$HOME/.ssh"
@@ -36,9 +49,11 @@ uv pip install --python .venv/bin/python -q vllm
 .venv/bin/python -c "import vllm; print('vllm', vllm.__version__)"
 
 echo "==> Starting vLLM (first start downloads the model; takes several minutes)"
+QUANT_FLAG=""
+[[ -n "$QUANT" ]] && QUANT_FLAG="--quantization $QUANT"
 cat > serve.sh <<EOF
 #!/usr/bin/env bash
-exec "$WORK/.venv/bin/vllm" serve "$MODEL" \\
+exec "$WORK/.venv/bin/vllm" serve "$MODEL" $QUANT_FLAG \\
   --host 127.0.0.1 --port 8000 \\
   --served-model-name leadscout \\
   --api-key "$LLM_API_KEY" \\
