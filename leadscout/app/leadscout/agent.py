@@ -166,9 +166,15 @@ class LeadAgent:
                 name = call.function.name
                 try:
                     args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError as exc:
-                    result: dict[str, Any] = {"error": f"arguments were not valid JSON: {exc}"}
+                    if not isinstance(args, dict):
+                        raise ValueError("arguments must be a JSON object")
+                except (json.JSONDecodeError, ValueError) as exc:
+                    result: dict[str, Any] = {"error": f"arguments were not valid: {exc}"}
                     args = {}
+                    if name == "submit_profile":
+                        submit_errors += 1
+                        if submit_errors > 2:
+                            raise RuntimeError("model could not produce a valid profile") from exc
                 else:
                     self._report(describe_step(name, args))
                     if name == "submit_profile":

@@ -167,14 +167,14 @@ def test_agent_runs_tools_then_submits():
 def test_agent_recovers_from_invalid_submit():
     llm = FakeLLM(
         [
-            [_call("1", "submit_profile", {"people": [{"role": "CEO"}]})],  # missing person name
+            [_call("1", "submit_profile", ["not", "an", "object"])],  # wrong top-level shape
             [_call("2", "submit_profile", {"company_name": "Joe Inc"})],
         ]
     )
     profile = LeadAgent(client=llm, tool_funcs={}).run("Joe Inc")
     assert profile.company_name == "Joe Inc"
     tool_msgs = [m for m in llm.requests[1]["messages"] if m["role"] == "tool"]
-    assert "failed validation" in tool_msgs[0]["content"]
+    assert "must be a JSON object" in tool_msgs[0]["content"]
 
 
 def test_agent_forces_submit_at_budget(monkeypatch):
@@ -553,3 +553,51 @@ def test_import_rejects_garbage():
 
     empty = base64.b64encode(b"Company\n,\n").decode()
     assert c.post("/ui/api/import", json={"filename": "a.csv", "data_b64": empty}, headers=h).status_code == 400
+
+
+# ------------------------------------------------------------------ lenient profile parsing (0.1.6)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"it_signals": "Uses Microsoft 365 (MX points to outlook)"},
+        {"it_signals": None},
+        {"it_signals": '{"email_provider": "Microsoft 365", "mx_records": "microsoft-com.mail.protection.outlook.com"}'},
+        {"it_signals": ["Microsoft 365", "Azure"]},
+        {"registrations": {"jurisdiction": "us_wa", "entity_number": 600413485}},
+        {"registrations": "Microsoft Corporation, Washington, Active"},
+        {"people": ["Satya Nadella - Chairman and CEO", "Amy Hood, CFO"]},
+        {"people": {"name": "Brad Smith", "role": "Vice Chair and President"}},
+        {"sources": "https://www.microsoft.com", "open_questions": None},
+        {"employee_estimate": 228000, "confidence": "HIGH"},
+        {"people": [{"name": "No Role Given"}]},
+    ],
+)
+def test_profile_accepts_common_model_shapes(payload):
+    p = LeadProfile.model_validate({"input_name": "Microsoft Corporation", **payload}).finalize()
+    assert p.input_name == "Microsoft Corporation"
+    assert p.confidence in {"high", "medium", "low"}
+
+
+def test_profile_shapes_are_normalised_sensibly():
+    p = LeadProfile.model_validate(
+        {
+            "input_name": "Microsoft Corporation",
+            "it_signals": "Uses Microsoft 365",
+            "people": ["Satya Nadella - Chairman and CEO"],
+            "registrations": {"jurisdiction": "us_wa", "entity_number": 600413485},
+            "employee_estimate": 228000,
+            "confidence": "HIGH",
+        }
+    ).finalize()
+    assert p.it_signals.notes == "Uses Microsoft 365"
+    assert (p.people[0].name, p.people[0].role) == ("Satya Nadella", "Chairman and CEO")
+    assert p.registrations[0].entity_number == "600413485"
+    assert p.employee_estimate == "228000" and p.confidence == "high"
+
+
+def test_agent_accepts_string_it_signals_from_model():
+    llm = FakeLLM([[_call("1", "submit_profile", {"company_name": "Microsoft", "it_signals": "Microsoft 365"})]])
+    profile = LeadAgent(client=llm, tool_funcs={}).run("Microsoft Corporation", "Seattle, Washington")
+    assert profile.it_signals.notes == "Microsoft 365"
