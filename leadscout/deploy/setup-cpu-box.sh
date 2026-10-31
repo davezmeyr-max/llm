@@ -22,12 +22,16 @@ fi
 echo "==> .env and secrets"
 gen() { openssl rand -hex 32; }
 [[ -f .env ]] || cp .env.example .env
-set_if_empty() {  # key value
-  if grep -qE "^$1=$" .env; then sed -i "s|^$1=$|$1=$2|" .env; fi
+set_if_empty() {  # key value: fill an empty KEY= line, or append KEY=value if the key is missing
+  if grep -qE "^$1=$" .env; then sed -i "s|^$1=$|$1=$2|" .env
+  elif ! grep -qE "^$1=" .env; then echo "$1=$2" >> .env; fi
 }
 set_if_empty API_TOKEN "$(gen)"
 set_if_empty SEARXNG_SECRET "$(gen)"
 set_if_empty LLM_API_KEY "$(gen)"
+set_if_empty SSO_SECRET "$(gen)"
+set_if_empty SESSION_SECRET "$(gen)"
+set_if_empty ADMIN_PASSWORD "$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)"
 chmod 600 .env
 LLM_API_KEY="$(grep -E '^LLM_API_KEY=' .env | cut -d= -f2-)"
 

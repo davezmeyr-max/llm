@@ -1,0 +1,12 @@
+line-length = 130
+
+[lint]
+select = ["E", "F", "W", "B", "I"]
+
+[lint.flake8-bugbear]
+# B008: FastAPI's Depends()/Query() in argument defaults is the framework's intended pattern.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
+
+[lint.per-file-ignores]
+# Embedded HTML/CSS/JS strings
+"leadscout/web_page.py" = ["E501"]

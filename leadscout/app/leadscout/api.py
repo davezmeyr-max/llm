@@ -1,22 +1,21 @@
-"""Small HTTP API: submit leads, check status, pull results (JSON or CSV)."""
+"""HTTP API: token-authenticated JSON endpoints plus the browser portal (see web.py)."""
 
 from __future__ import annotations
 
-import csv
 import hmac
-import io
 
-import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .config import settings
-from .db import LeadStore
+from .state import build_csv, llm_online, store
+from .web import router as web_router
 
 # No /docs, /redoc or /openapi.json: the API can be published on the internet behind Caddy.
-app = FastAPI(title="LeadScout", version="0.1.2", docs_url=None, redoc_url=None, openapi_url=None)
-store = LeadStore(settings.db_path)
+app = FastAPI(title="LeadScout", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(web_router)
 
 
 def require_token(authorization: str = Header(default="")) -> None:
@@ -38,22 +37,12 @@ class BulkIn(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "version": __version__}
 
 
 @app.get("/status", dependencies=[Depends(require_token)])
 def status() -> dict:
-    llm_up = False
-    try:
-        r = httpx.get(
-            f"{settings.llm_base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-            timeout=5.0,
-        )
-        llm_up = r.status_code == 200
-    except httpx.HTTPError:
-        pass
-    return {"queue": store.counts(), "llm_online": llm_up}
+    return {"queue": store.counts(), "llm_online": llm_online()}
 
 
 @app.post("/leads", dependencies=[Depends(require_token)], status_code=201)
@@ -91,24 +80,4 @@ def retry_lead(lead_id: int) -> dict:
 
 @app.get("/export.csv", dependencies=[Depends(require_token)], response_class=PlainTextResponse)
 def export_csv() -> str:
-    """Flat export of finished leads, one row per lead, for CRM import."""
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(
-        ["id", "input_name", "company_name", "website", "industry", "employee_estimate", "business_address",
-         "business_phone", "email_provider", "registration", "people", "confidence", "summary", "sources"]
-    )
-    for row in store.list("done", 10000):
-        p = row.get("profile") or {}
-        regs = "; ".join(
-            f"{r.get('jurisdiction')} {r.get('entity_number') or ''} {r.get('status') or ''}".strip()
-            for r in p.get("registrations", [])
-        )
-        people = "; ".join(f"{x.get('name')} ({x.get('role')})" for x in p.get("people", []))
-        w.writerow(
-            [row["id"], p.get("input_name"), p.get("company_name"), p.get("website"), p.get("industry"),
-             p.get("employee_estimate"), p.get("business_address"), p.get("business_phone"),
-             (p.get("it_signals") or {}).get("email_provider"), regs, people, p.get("confidence"),
-             p.get("summary"), " ".join(p.get("sources", []))]
-        )
-    return buf.getvalue()
+    return build_csv()

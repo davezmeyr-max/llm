@@ -1,73 +1,100 @@
 # Connecting a Base44 site to LeadScout
 
-The browser never talks to LeadScout directly and never sees the API token.
+LeadScout serves its own portal at `https://<PUBLIC_HOSTNAME>/`. Base44 does one thing: when a
+signed-in user clicks **Lead Research**, a Base44 backend function builds a short-lived signed link
+and sends the browser there. The user lands in the portal already signed in. No Base44 pages call the
+LLM, and no Base44 AI features are involved.
 
 ```
-Visitor (logged in to your Base44 site)
-   │  page calls a Base44 backend function
+User signed in to Base44 ── clicks "Lead Research"
+   │  Base44 backend function: confirms the user, signs {email|name|exp} with SSO_SECRET
    ▼
-Base44 backend function ── checks the user is logged in, adds the secret token
-   │  HTTPS
+https://<PUBLIC_HOSTNAME>/sso?email=…&name=…&exp=…&sig=…
+   │  LeadScout checks the signature (valid 5 min, single use), sets its own session cookie
    ▼
-https://<PUBLIC_HOSTNAME>  (Caddy on the CPU box)  →  LeadScout API
+https://<PUBLIC_HOSTNAME>/   (Lead Research portal)
 ```
 
 ## 1. Base44 secrets
 
-In your Base44 app's settings, add two secrets / environment variables:
-
 | Name | Value |
 |---|---|
-| `LEADSCOUT_API_URL` | `https://<PUBLIC_HOSTNAME>` (no trailing slash) |
-| `LEADSCOUT_API_TOKEN` | the `API_TOKEN` value from `.env` on the CPU box |
+| `LEADSCOUT_URL` | `https://<PUBLIC_HOSTNAME>` (no trailing slash) |
+| `LEADSCOUT_SSO_SECRET` | the `SSO_SECRET` value from `.env` on the CPU box |
+
+Set them with the Base44 CLI (`base44 secrets set NAME value`) or ask the Base44 AI chat to add them.
 
 ## 2. Prompt to paste into the Base44 builder
 
-> Add a "Lead Research" section to this app, visible only to logged-in users.
+> Add a "Lead Research" item to the navigation, visible only to signed-in users. It must NOT use any
+> built-in AI/LLM integration. Remove any existing Lead Research pages or AI research features.
 >
-> Backend: create backend functions that call an external API. Read the base URL from the secret
-> `LEADSCOUT_API_URL` and a bearer token from the secret `LEADSCOUT_API_TOKEN`. Send the header
-> `Authorization: Bearer <token>` on every request. Every function must first confirm the caller is a
-> logged-in user and return 401 otherwise. Never send the token or the URL to the browser.
+> Create a backend function `leadResearchLink` that:
+> 1. Gets the current user with `createClientFromRequest(req)` and `base44.auth.me()`; returns 401 if
+>    there is no user.
+> 2. Reads secrets `LEADSCOUT_URL` and `LEADSCOUT_SSO_SECRET` inside the handler.
+> 3. Sets `email` = the user's email in lowercase, `name` = the user's full name or "" , and
+>    `exp` = current Unix time in seconds + 120.
+> 4. Computes `sig` = lowercase hex HMAC-SHA256 of the string `email + "|" + name + "|" + exp`, keyed
+>    with `LEADSCOUT_SSO_SECRET` (use Web Crypto `crypto.subtle`).
+> 5. Returns `{ url: LEADSCOUT_URL + "/sso?" + URLSearchParams({email, name, exp, sig}) }`.
 >
-> Functions:
-> 1. `submitLeads(leads)` → `POST {URL}/leads/bulk` with JSON body `{"leads": [{"company": string, "hints": string}]}`
->    (1–500 items; company 2–200 chars; hints up to 500 chars). Returns `{"ids": [int]}`.
-> 2. `listLeads(status?)` → `GET {URL}/leads?status=<queued|running|done|failed>&limit=200` (status optional).
->    Returns an array of `{id, company, hints, status, attempts, profile, error, created_at, updated_at}`.
-> 3. `getLead(id)` → `GET {URL}/leads/{id}`. Returns one lead including `profile`.
-> 4. `retryLead(id)` → `POST {URL}/leads/{id}/retry`.
-> 5. `leadStatus()` → `GET {URL}/status`. Returns `{"queue": {status: count}, "llm_online": bool}`.
-> 6. `exportCsv()` → `GET {URL}/export.csv`, returned to the user as a file download `leads.csv`.
->
-> Pages:
-> - **New research**: a form with Company name and Hints (city/state, website, industry), plus a
->   "Bulk add" textarea where each line is `Company name | hints`. Submit calls `submitLeads`.
-> - **Leads**: a table (company, status badge, confidence, updated) with a status filter, auto-refresh
->   every 15 seconds while any lead is queued or running, a Retry button on failed rows, and an
->   "Export CSV" button. Show a small banner from `leadStatus()`: "Research engine online" or
->   "Research engine offline: leads will wait in the queue".
-> - **Lead detail**: render `profile` with these sections: Summary (company_name, website link,
->   industry, employee_estimate, business_address, business_phone, confidence); Registrations table
->   (jurisdiction, entity_number, status, entity_type, formation_date, registered_agent, source_url
->   link); People table (name, role, source_url link, and a "Search LinkedIn" button that opens
->   `linkedin_search_url` in a new tab); IT signals (email_provider, mx_records, notes);
->   Open questions; Sources as links.
+> When the user clicks "Lead Research", call `leadResearchLink` and open the returned `url` in the same
+> tab (`window.location.href = url`). Never expose the secret to the browser.
 
-## 3. Test it
+## 3. Reference implementation (if you prefer to paste code)
 
-From the CPU box, before involving Base44:
+```ts
+import { createClientFromRequest } from "npm:@base44/sdk";
+import { secrets } from "base44:runtime";
 
-```bash
-TOKEN=$(grep ^API_TOKEN .env | cut -d= -f2)
-curl -s -H "Authorization: Bearer $TOKEN" https://<PUBLIC_HOSTNAME>/status
+async function hmacHex(key: string, msg: string): Promise<string> {
+  const k = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+Deno.serve(async (req) => {
+  const base44 = createClientFromRequest(req);
+  const user = await base44.auth.me();
+  if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  const base = secrets.get("LEADSCOUT_URL");
+  const secret = secrets.get("LEADSCOUT_SSO_SECRET");
+  if (!base || !secret) return Response.json({ error: "LeadScout not configured" }, { status: 500 });
+
+  const email = String(user.email).toLowerCase();
+  const name = String(user.full_name ?? "");
+  const exp = String(Math.floor(Date.now() / 1000) + 120);
+  const sig = await hmacHex(secret, `${email}|${name}|${exp}`);
+  return Response.json({ url: `${base}/sso?${new URLSearchParams({ email, name, exp, sig })}` });
+});
 ```
 
-Expect `{"queue": {...}, "llm_online": ...}`. Without the header you should get `401`.
+Base44's runtime conventions change; if this doesn't run as-is, use the prompt in step 2 and let the
+builder adapt it. The contract that matters is the signed string and the URL parameters.
+
+## 4. Test without Base44
+
+On the CPU box, generate a link by hand and open it in your browser:
+
+```bash
+python3 - <<'EOF'
+import hmac, hashlib, time, urllib.parse
+secret = open(".env").read().split("SSO_SECRET=")[1].split()[0]
+email, name, exp = "you@yourcompany.com", "You", str(int(time.time()) + 120)
+sig = hmac.new(secret.encode(), f"{email}|{name}|{exp}".encode(), hashlib.sha256).hexdigest()
+print("https://llm.readycomply.app/sso?" + urllib.parse.urlencode(dict(email=email, name=name, exp=exp, sig=sig)))
+EOF
+```
+
+Administrators can also sign in at `https://<PUBLIC_HOSTNAME>/login` with `ADMIN_PASSWORD` from `.env`.
 
 ## Notes
 
-- All signed-in users of the site share one lead list. If you need per-user lists, that's a small
-  change (store the submitting user on each lead); ask for it.
-- Rotating the token: change `API_TOKEN` in `.env`, run `docker compose up -d --force-recreate api`,
-  and update the Base44 secret.
+- Who gets in is decided entirely by your Base44 login: anyone who can click the button gets a link.
+- Every lead records the email of the person who submitted it.
+- The token API (`/leads`, `/status`, `/export.csv` with `Authorization: Bearer API_TOKEN`) still works for
+  scripts and other integrations.

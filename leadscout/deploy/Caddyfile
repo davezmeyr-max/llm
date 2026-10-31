@@ -1,24 +1,20 @@
-# Public HTTPS front for the LeadScout API. Certificates are issued automatically (Let's Encrypt).
-# Only the API routes are passed through; every request still needs the API bearer token.
+# Public HTTPS front for LeadScout. Certificates are issued automatically (Let's Encrypt).
+# Serves the browser portal (Base44 sign-in handoff or admin password) and the token API.
+# The app itself has no docs/OpenAPI routes and requires a session or token everywhere else.
 {$PUBLIC_HOSTNAME} {
 	encode gzip
 
-	@api path /health /status /leads /leads/* /export.csv
-	handle @api {
-		request_body {
-			max_size 1MB
-		}
-		reverse_proxy 127.0.0.1:8090
+	request_body {
+		max_size 1MB
 	}
-
-	handle {
-		respond 404
-	}
+	reverse_proxy 127.0.0.1:8090
 
 	header {
 		-Server
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
 	}
 
 	log {

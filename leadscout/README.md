@@ -65,11 +65,15 @@ interrupted lead is requeued automatically.
 | `POST /leads/{id}/retry` | Re-run a lead |
 | `GET /export.csv` | Flat CSV for CRM import |
 
-## Connect your website (optional)
+## Web portal and website sign-in (optional)
 
 Set `PUBLIC_HOSTNAME` in `.env` (DNS A record pointing at this box, ports 80/443 open) and re-run
-`setup-cpu-box.sh`. Caddy publishes the API over HTTPS with an automatic certificate. Your site's
-backend calls it with the API token. For Base44 see [integrations/base44.md](integrations/base44.md).
+`setup-cpu-box.sh`. Caddy serves the **Lead Research portal** at `https://<PUBLIC_HOSTNAME>/` with an
+automatic certificate: submit leads, watch progress, open profiles, export CSV.
+
+Sign-in: your website hands signed-in users over with a short-lived signed link (`SSO_SECRET`), or an
+administrator signs in at `/login` with `ADMIN_PASSWORD`. Both secrets are generated into `.env` by the
+setup script. For Base44 see [integrations/base44.md](integrations/base44.md).
 
 ## Guardrails built in
 

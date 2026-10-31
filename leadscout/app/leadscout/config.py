@@ -40,6 +40,13 @@ class Settings:
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", "/data/leadscout.db"))
     api_token: str = field(default_factory=lambda: os.getenv("API_TOKEN", ""))
 
+    # Web portal
+    public_hostname: str = field(default_factory=lambda: os.getenv("PUBLIC_HOSTNAME", ""))
+    sso_secret: str = field(default_factory=lambda: os.getenv("SSO_SECRET", ""))  # shared with Base44
+    session_secret: str = field(default_factory=lambda: os.getenv("SESSION_SECRET", ""))
+    admin_password: str = field(default_factory=lambda: os.getenv("ADMIN_PASSWORD", ""))
+    session_hours: int = field(default_factory=lambda: int(os.getenv("SESSION_HOURS", "12")))
+
     # Worker
     poll_interval_s: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL_S", "10")))
     notify_webhook: str = field(default_factory=lambda: os.getenv("NOTIFY_WEBHOOK_URL", ""))

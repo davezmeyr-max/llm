@@ -6,6 +6,9 @@ import pytest
 
 os.environ.setdefault("DB_PATH", ":memory:")
 os.environ.setdefault("API_TOKEN", "test-token")
+os.environ.setdefault("SSO_SECRET", "sso-test-secret")
+os.environ.setdefault("SESSION_SECRET", "session-test-secret")
+os.environ.setdefault("ADMIN_PASSWORD", "admin-test-pw")
 
 from leadscout import tools  # noqa: E402
 from leadscout.agent import LeadAgent, _shrink_old_pages  # noqa: E402
@@ -265,3 +268,93 @@ def test_api_docs_not_published():
     c = TestClient(api.app)
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert c.get(path).status_code == 404
+
+
+# ------------------------------------------------------------------ web portal
+
+
+def _sso_url(email="jane@cis.example", name="Jane Doe", exp_offset=60, secret="sso-test-secret"):
+    import hashlib
+    import hmac
+    import time
+    from urllib.parse import urlencode
+
+    exp = int(time.time()) + exp_offset
+    sig = hmac.new(secret.encode(), f"{email}|{name}|{exp}".encode(), hashlib.sha256).hexdigest()
+    return "/sso?" + urlencode({"email": email, "name": name, "exp": exp, "sig": sig})
+
+
+def _client():
+    from fastapi.testclient import TestClient
+
+    from leadscout import api
+
+    return TestClient(api.app, follow_redirects=False)
+
+
+def test_portal_redirects_to_login_without_session():
+    c = _client()
+    r = c.get("/")
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    assert c.get("/ui/api/leads").status_code == 401
+
+
+def test_sso_signs_in_and_is_single_use():
+    c = _client()
+    url = _sso_url()
+    r = c.get(url)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert "httponly" in r.headers["set-cookie"].lower()
+    assert c.get("/").status_code == 200
+    assert c.get("/ui/api/me").json()["email"] == "jane@cis.example"
+    c2 = _client()
+    assert c2.get(url).status_code == 401  # replay rejected
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"secret": "wrong"}, {"exp_offset": -10}, {"exp_offset": 3600}, {"email": "not-an-email"}],
+)
+def test_sso_rejects_bad_links(kwargs):
+    assert _client().get(_sso_url(**kwargs)).status_code == 401
+
+
+def test_tampered_session_cookie_rejected():
+    c = _client()
+    c.get(_sso_url(email="a@b.example"))
+    from leadscout.web import COOKIE
+
+    good = c.cookies.get(COOKIE)
+    body, sig = good.rsplit(".", 1)
+    c.cookies.set(COOKIE, body + "." + ("0" * len(sig)))
+    assert c.get("/ui/api/me").status_code == 401
+
+
+def test_ui_post_requires_csrf_header_and_records_submitter():
+    c = _client()
+    c.get(_sso_url(email="bob@cis.example", name="Bob"))
+    body = {"leads": [{"company": "Lakeshore Dental", "hints": "Chicago"}]}
+    assert c.post("/ui/api/leads", json=body).status_code == 403
+    r = c.post("/ui/api/leads", json=body, headers={"X-Requested-With": "leadscout"})
+    assert r.status_code == 201
+    rows = c.get("/ui/api/leads").json()
+    assert any(x["company"] == "Lakeshore Dental" and x["submitted_by"] == "bob@cis.example" for x in rows)
+    csv_resp = c.get("/ui/api/export.csv")
+    assert csv_resp.status_code == 200 and "attachment" in csv_resp.headers["content-disposition"]
+
+
+def test_admin_password_login_and_lockout():
+    c = _client()
+    h = {"X-Requested-With": "leadscout", "X-Forwarded-For": "203.0.113.9"}
+    assert c.post("/login", json={"password": "admin-test-pw"}, headers={"X-Requested-With": "leadscout"}).status_code == 200
+    assert c.get("/ui/api/me").json()["email"] == "admin"
+    bad = _client()
+    codes = [bad.post("/login", json={"password": "nope"}, headers=h).status_code for _ in range(11)]
+    assert codes[:10] == [401] * 10 and codes[10] == 429
+
+
+def test_logout_clears_session():
+    c = _client()
+    c.get(_sso_url(email="z@cis.example"))
+    c.get("/logout")
+    assert c.get("/ui/api/me").status_code == 401

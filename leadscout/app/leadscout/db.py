@@ -40,13 +40,16 @@ class LeadStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(leads)")}
+        if "submitted_by" not in cols:  # migration from 0.1.2
+            self._conn.execute("ALTER TABLE leads ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''")
         self._lock = threading.Lock()
 
-    def add(self, company: str, hints: str = "") -> int:
+    def add(self, company: str, hints: str = "", submitted_by: str = "") -> int:
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO leads (company, hints, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (company.strip(), hints.strip(), _now(), _now()),
+                "INSERT INTO leads (company, hints, submitted_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (company.strip(), hints.strip(), submitted_by.strip().lower(), _now(), _now()),
             )
             return int(cur.lastrowid)
 
