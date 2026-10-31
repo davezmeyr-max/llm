@@ -97,6 +97,8 @@ border-bottom:1px solid var(--line)}.chathead h2{margin:0}
 .chatempty{margin:auto;text-align:center;color:var(--muted);max-width:460px;font-size:14px}
 .toggle{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
 .toggle input{width:auto;margin:0}
+.banner.stop{background:var(--badbg);color:var(--bad);display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.banner.stop .approve{background:var(--bad);color:#fff;white-space:nowrap}
 .bubble .status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px}
 .bubble .status .dot{background:var(--accent);animation:pulse 1.2s infinite}
 @keyframes pulse{50%{opacity:.25}}
@@ -224,18 +226,26 @@ async function loadDashboard(){const b=$('batch').value;
    `last ${Math.min(5,sp.samples)} avg ${dur(sp.recent_s)} · normal ${dur(sp.normal_s)} · ${sp.per_hour}/hr`,
    {from:0.5,frac:f,color:dv>20?'var(--serious)':'var(--accent)',status:st}))}
  else g.push(gauge('Speed vs normal','–',sp.samples?`Learning normal speed: ${sp.need} more lead${sp.need>1?'s':''}`:'Needs finished leads',{from:0.5,frac:0.5}));
- // 5 cost estimate
- if(c.per_lead!=null){const frac=c.batch_estimate?c.batch_spent/c.batch_estimate:0;
-  g.push(gauge('Est. cost',money(c.currency,c.per_lead),
-   `per lead · batch ≈ ${money(c.currency,c.batch_estimate)} (${money(c.currency,c.batch_spent)} so far)`+
-   (c.session_s!=null?` · GPU on ${dur(c.session_s)} ≈ ${money(c.currency,c.session_cost)}`:''),{frac:frac}))}
- else g.push(gauge('Est. cost','–',`GPU ${money(c.currency,c.rate_per_hour)}/hr`+
-   (c.session_s!=null?` · on ${dur(c.session_s)} ≈ ${money(c.currency,c.session_cost)}`:'')+' · per-lead cost after first results',{frac:0}));
+ // 5 spend against the approved limit (meter), with per-lead and batch estimates underneath
+ const bu=d.budget||{};
+ const perLead=c.per_lead!=null?`${money(c.currency,c.per_lead)}/lead · batch ≈ ${money(c.currency,c.batch_estimate)}`:`GPU ${money(c.currency,c.rate_per_hour)}/hr`;
+ if(bu.enabled){const pct=bu.pct||0;
+  g.push(gauge('GPU spend',money(bu.currency,bu.spent),`of ${money(bu.currency,bu.limit)} approved · ${perLead}`,
+   {frac:pct/100,color:bu.paused?'var(--critical)':pct>=80?'var(--warning)':'var(--accent)',
+    status:bu.paused?['critical','Paused at limit']:pct>=80?['warning',Math.round(pct)+'% of limit']:null}))}
+ else g.push(gauge('Est. cost',c.per_lead!=null?money(c.currency,c.per_lead):'–',perLead+
+   (c.session_s!=null?` · GPU on ${dur(c.session_s)} ≈ ${money(c.currency,c.session_cost)}`:''),{frac:0}));
  $('gauges').replaceChildren(...g);
  // banner + working strip
- const bn=$('banner');bn.className='banner '+(e.online?'on':'off');
- bn.textContent=e.online?'Research engine online.':(document.body.classList.contains('chat')?
-  'Model offline: start the GPU instance to chat.':'Research engine offline: new leads wait in the queue and run when it starts.');
+ const bn=$('banner');
+ if(bu.paused){bn.className='banner stop';
+  bn.replaceChildren(el('div',{},el('b',{text:`Spending limit reached: ${money(bu.currency,bu.spent)} of ${money(bu.currency,bu.limit)} approved. `}),
+   'Research and chat are paused. The GPU instance keeps billing while it exists: destroy it in the Hostinger dashboard if you are not continuing.'),
+   bu.can_approve?el('button',{class:'approve',text:`Approve another ${money(bu.currency,bu.step)}`,onclick:approveMore}):
+    el('div',{class:'small',text:'Ask an approver to raise the limit.'}))}
+ else{bn.className='banner '+(e.online?'on':'off');
+  bn.textContent=e.online?'Research engine online.':(document.body.classList.contains('chat')?
+   'Model offline: start the GPU instance to chat.':'Research engine offline: new leads wait in the queue and run when it starts.')}
  const w=$('working');
  if(d.working.length){w.style.display='block';w.replaceChildren(...d.working.map(x=>el('div',{class:'w'},
    el('span',{class:'dot',style:'background:var(--accent)'}),el('b',{text:x.company}),
@@ -248,6 +258,12 @@ async function loadDashboard(){const b=$('batch').value;
    text:`${x.batch} (${x.done}/${x.total})`})));sel.value=names.includes(cur)?cur:''}
  else d.batches.forEach((x,i)=>{sel.options[i+1].textContent=`${x.batch} (${x.done}/${x.total})`});
  return d}
+
+async function approveMore(ev){const bu=(dash&&dash.budget)||{};
+ if(!confirm(`Approve another ${money(bu.currency,bu.step)} of GPU spend? Research and chat resume immediately.`))return;
+ ev.target.disabled=true;
+ try{await api('/ui/api/budget/approve',{method:'POST',headers:H});await refresh()}
+ catch(e){alert(e.message);ev.target.disabled=false}}
 
 async function loadMe(){const me=await api('/ui/api/me');$('who').textContent=me.name?`${me.name} · ${me.email}`:me.email}
 

@@ -817,3 +817,87 @@ def test_plain_chat_says_web_is_off():
     from leadscout.chat import NO_WEB_ADDENDUM, SYSTEM_PROMPT
 
     assert "no internet access" not in SYSTEM_PROMPT and "no internet access" in NO_WEB_ADDENDUM
+
+
+# ------------------------------------------------------------------ spending limit (0.1.11)
+
+
+def test_budget_accumulates_pauses_and_approves(monkeypatch):
+    from leadscout import budget
+    from leadscout.db import LeadStore
+
+    s = LeadStore(":memory:")
+    monkeypatch.setattr(budget.settings.__class__, "__setattr__", object.__setattr__)
+    assert not budget.paused(s) and budget.limit(s) == 100
+    # $0.75/hr -> $100 takes 133.33 h; feed it in hour-sized ticks (longer gaps are ignored)
+    for _ in range(133):
+        budget.add_gpu_time(s, 3600)
+    assert not budget.paused(s)
+    budget.add_gpu_time(s, 7200)  # capped at one hour
+    assert budget.paused(s) and 100 <= budget.spent(s) < 101
+    st = budget.status(s, "someone@cis.example")
+    assert st["paused"] and not st["can_approve"] and st["pct"] == 100.0
+    new = budget.approve(s, "admin")
+    assert new == pytest.approx(budget.spent(s) + 100) and not budget.paused(s)
+    assert json.loads(s.get_meta(budget.LOG))[0]["by"] == "admin"
+
+
+def test_worker_does_not_start_leads_when_paused(monkeypatch):
+    from leadscout import budget, worker
+    from leadscout.db import LeadStore
+
+    s = LeadStore(":memory:")
+    s.add("Joe Inc")
+    s.set_meta(budget.GPU_SECONDS, str(200 * 3600))  # $150 spent, limit $100
+    notes = []
+    monkeypatch.setattr(worker, "llm_online", lambda: True)
+    monkeypatch.setattr(worker, "notify", notes.append)
+
+    def stop_after_sleep(_):
+        worker._stop = True
+
+    monkeypatch.setattr(worker.time, "sleep", stop_after_sleep)
+    worker._stop = False
+    try:
+        worker.run_forever(s)
+    finally:
+        worker._stop = False
+    assert s.counts() == {"queued": 1}  # nothing claimed
+    assert notes and "spending limit reached" in notes[0] and "destroy the GPU" in notes[0]
+
+
+def test_chat_refused_when_paused_and_approval_permissions(monkeypatch):
+    import uuid
+
+    from leadscout import budget, state
+
+    state.store.set_meta(budget.GPU_SECONDS, str(state.store.get_meta(budget.GPU_SECONDS) or 0))
+    monkeypatch.setattr(budget, "paused", lambda store: True)
+    c = _client()
+    c.get(_sso_url(email=f"u-{uuid.uuid4().hex[:6]}@cis.example"))
+    h = {"X-Requested-With": "leadscout"}
+    r = c.post("/ui/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=h)
+    assert r.status_code == 402 and "Spending limit reached" in r.json()["detail"]
+    assert c.post("/ui/api/budget/approve", headers=h).status_code == 403  # not an approver
+    d = c.get("/ui/api/dashboard").json()
+    assert d["budget"]["paused"] and d["budget"]["can_approve"] is False
+
+    monkeypatch.undo()
+    admin = _client()
+    admin.post("/login", json={"password": "admin-test-pw"}, headers=h)
+    before = budget.limit(state.store)
+    r = admin.post("/ui/api/budget/approve", headers=h)
+    assert r.status_code == 200 and r.json()["limit"] >= before + 100 and r.json()["can_approve"]
+    assert admin.post("/ui/api/budget/approve").status_code == 403  # CSRF header required
+
+
+def test_listed_approver_can_approve(monkeypatch):
+    from leadscout import budget
+
+    monkeypatch.setattr(budget.settings.__class__, "__setattr__", object.__setattr__)
+    old = budget.settings.budget_approvers
+    object.__setattr__(budget.settings, "budget_approvers", ("dave@cis.example",))
+    try:
+        assert budget.is_approver("Dave@CIS.example") and not budget.is_approver("eve@cis.example")
+    finally:
+        object.__setattr__(budget.settings, "budget_approvers", old)

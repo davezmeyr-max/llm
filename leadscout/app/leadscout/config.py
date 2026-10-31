@@ -50,6 +50,13 @@ class Settings:
     # Cost estimate (Hostinger RTX PRO 6000, 2 cores / 64 GB: 75 credits/hour, about $0.75 on a USD account)
     gpu_cost_per_hour: float = field(default_factory=lambda: float(os.getenv("GPU_COST_PER_HOUR", "0.75")))
     cost_currency: str = field(default_factory=lambda: os.getenv("COST_CURRENCY", "$"))
+    # Spending limit: work pauses each time estimated GPU spend reaches another BUDGET_STEP (0 disables).
+    budget_step: float = field(default_factory=lambda: float(os.getenv("BUDGET_STEP", "100")))
+    budget_approvers: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            e.strip().lower() for e in os.getenv("BUDGET_APPROVERS", "").split(",") if e.strip()
+        )
+    )
 
     # Worker
     poll_interval_s: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL_S", "10")))

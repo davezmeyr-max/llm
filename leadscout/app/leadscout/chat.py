@@ -19,11 +19,13 @@ import logging
 from typing import Any, AsyncIterator, Literal
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from . import budget
 from .config import settings
+from .state import store
 from .web import require_csrf, require_session
 
 log = logging.getLogger(__name__)
@@ -222,6 +224,13 @@ async def research_chat(messages: list[dict[str, str]], reasoning: bool) -> Asyn
 
 @router.post("/ui/api/chat", dependencies=[Depends(require_csrf)], include_in_schema=False)
 async def ui_chat(body: ChatIn, user: dict = Depends(require_session)):
+    if budget.paused(store):
+        b = budget.status(store)
+        raise HTTPException(
+            402,
+            f"Spending limit reached ({b['currency']}{b['spent']:.2f} of {b['currency']}{b['limit']:.2f}). "
+            f"Chat is paused until another {b['currency']}{b['step']:.0f} is approved.",
+        )
     msgs = [m.model_dump() for m in body.messages]
     log.info("chat: %s, %d message(s), reasoning=%s, web=%s", user.get("email"), len(msgs), body.reasoning, body.web)
     events = research_chat(msgs, body.reasoning) if body.web else stream_completion(msgs, body.reasoning)

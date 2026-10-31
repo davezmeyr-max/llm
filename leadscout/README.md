@@ -83,6 +83,11 @@ pages before answering, showing each step live and listing the pages it used; th
 blocked-site and SSRF protections as lead research apply. With it off, it is the bare model.
 Chats are not stored on the server.
 
+**Spending limit:** GPU time while the model is online × `GPU_COST_PER_HOUR` is tracked as spend. At every
+`BUDGET_STEP` ($100 by default) research and chat pause, you get a notification, and approvers (admin plus
+`BUDGET_APPROVERS` emails) see an "Approve another $100" button. Pausing does not stop the GPU billing:
+destroy the instance in the Hostinger dashboard if you are not continuing.
+
 Sign-in: your website hands signed-in users over with a short-lived signed link (`SSO_SECRET`), or an
 administrator signs in at `/login` with `ADMIN_PASSWORD`. Both secrets are generated into `.env` by the
 setup script. For Base44 see [integrations/base44.md](integrations/base44.md).

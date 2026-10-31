@@ -16,7 +16,7 @@ services:
     cap_add: [CHOWN, SETGID, SETUID]
 
   api:
-    image: leadscout:${LEADSCOUT_TAG:-0.1.10}
+    image: leadscout:${LEADSCOUT_TAG:-0.1.11}
     build: ./app
     restart: unless-stopped
     network_mode: host
@@ -29,7 +29,7 @@ services:
       - leadscout-data:/data
 
   worker:
-    image: leadscout:${LEADSCOUT_TAG:-0.1.10}
+    image: leadscout:${LEADSCOUT_TAG:-0.1.11}
     build: ./app
     restart: unless-stopped
     network_mode: host

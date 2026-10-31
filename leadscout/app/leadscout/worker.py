@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from . import budget
 from .agent import LeadAgent
 from .config import settings
 from .db import LeadStore
@@ -75,11 +76,29 @@ def run_forever(store: LeadStore | None = None) -> None:
     processed_in_batch = 0
     waiting_since: float | None = None
     waiting_notified = False
+    last_tick = time.monotonic()
+    budget_notified = False
 
     while not _stop:
         queued = store.counts().get("queued", 0)
         online = llm_online()
         track_engine(store, online)
+        now = time.monotonic()
+        if online:
+            budget.add_gpu_time(store, now - last_tick)
+        last_tick = now
+
+        if budget.paused(store):
+            if not budget_notified:
+                b = budget.status(store)
+                notify(f"LeadScout: spending limit reached ({b['currency']}{b['spent']:.2f} of "
+                       f"{b['currency']}{b['limit']:.2f} approved). Research and chat are paused. Approve another "
+                       f"{b['currency']}{b['step']:.0f} in the portal, or destroy the GPU instance: it keeps "
+                       "billing while it exists.")
+                budget_notified = True
+            time.sleep(settings.poll_interval_s)
+            continue
+        budget_notified = False
 
         if queued == 0:
             if processed_in_batch:

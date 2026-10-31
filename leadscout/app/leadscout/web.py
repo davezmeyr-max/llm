@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from . import budget
 from .config import settings
 from .importer import ImportError_, parse_upload
 from .metrics import dashboard
@@ -226,8 +227,18 @@ def _batch_label(prefix: str) -> str:
 
 
 @router.get("/ui/api/dashboard", include_in_schema=False)
-def ui_dashboard(batch: str | None = None, user: dict = Depends(require_session)) -> dict:  # noqa: ARG001
-    return dashboard(store, batch or None)
+def ui_dashboard(batch: str | None = None, user: dict = Depends(require_session)) -> dict:
+    data = dashboard(store, batch or None)
+    data["budget"] = budget.status(store, user.get("email"))
+    return data
+
+
+@router.post("/ui/api/budget/approve", dependencies=[Depends(require_csrf)], include_in_schema=False)
+def ui_budget_approve(user: dict = Depends(require_session)) -> dict:
+    if not budget.is_approver(user.get("email")):
+        raise HTTPException(403, "you are not allowed to approve more spending")
+    budget.approve(store, user.get("email", ""))
+    return budget.status(store, user.get("email"))
 
 
 @router.get("/ui/api/leads", include_in_schema=False)
