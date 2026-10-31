@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from datetime import datetime, timezone
 
 import httpx
 
@@ -56,6 +57,15 @@ def notify(text: str) -> None:
         log.warning("notify failed: %s", exc)
 
 
+def track_engine(store: LeadStore, online: bool) -> None:
+    """Remember when the model came online, for the cost meter's 'GPU session' figure."""
+    since = store.get_meta("engine_online_since")
+    if online and not since:
+        store.set_meta("engine_online_since", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    elif not online and since:
+        store.set_meta("engine_online_since", None)
+
+
 def run_forever(store: LeadStore | None = None) -> None:
     store = store or LeadStore(settings.db_path)
     requeued = store.requeue_running()
@@ -68,6 +78,8 @@ def run_forever(store: LeadStore | None = None) -> None:
 
     while not _stop:
         queued = store.counts().get("queued", 0)
+        online = llm_online()
+        track_engine(store, online)
 
         if queued == 0:
             if processed_in_batch:
@@ -78,7 +90,7 @@ def run_forever(store: LeadStore | None = None) -> None:
             time.sleep(settings.poll_interval_s)
             continue
 
-        if not llm_online():
+        if not online:
             waiting_since = waiting_since or time.monotonic()
             if not waiting_notified and time.monotonic() - waiting_since > WAITING_NOTICE_AFTER_S:
                 notify(f"LeadScout: {queued} lead(s) waiting and the LLM is offline. Deploy the GPU instance.")
@@ -91,7 +103,8 @@ def run_forever(store: LeadStore | None = None) -> None:
         if lead is None:
             continue
         log.info("lead %s: researching %r (attempt %s)", lead["id"], lead["company"], lead["attempts"])
-        agent = LeadAgent()
+        lead_id = lead["id"]
+        agent = LeadAgent(on_step=lambda text, _id=lead_id: store.set_step(_id, text))
         started = time.monotonic()
         try:
             profile = agent.run(lead["company"], lead["hints"])

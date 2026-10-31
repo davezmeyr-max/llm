@@ -79,5 +79,6 @@ def retry_lead(lead_id: int) -> dict:
 
 
 @app.get("/export.csv", dependencies=[Depends(require_token)], response_class=PlainTextResponse)
-def export_csv() -> str:
-    return build_csv()
+def export_csv(batch: str | None = None) -> str:
+    """Finished leads only; optionally one import batch."""
+    return build_csv(batch)

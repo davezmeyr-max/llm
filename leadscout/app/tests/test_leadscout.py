@@ -366,3 +366,190 @@ def test_session_cookie_secure_only_over_https():
     assert "secure" not in r.headers["set-cookie"].lower()
     r = _client().get(_sso_url(email="https@cis.example"), headers={"X-Forwarded-Proto": "https"})
     assert "secure" in r.headers["set-cookie"].lower()
+
+
+# ------------------------------------------------------------------ import / dashboard / export (0.1.5)
+
+
+def test_import_csv_with_headers_folds_hints_and_dedupes():
+    from leadscout.importer import parse_upload
+
+    csv_bytes = (
+        "Company Name,City,State,Website,Owner phone\n"
+        "Joe Inc,Chicago,IL,joeinc.com,555\n"
+        "Joe Inc,Chicago,IL,joeinc.com,555\n"
+        ",Evanston,IL,,\n"
+        "Acme Plumbing LLC,Naperville,IL,,\n"
+    ).encode()
+    r = parse_upload("prospects.csv", csv_bytes)
+    assert r.rows == [("Joe Inc", "Chicago, IL, joeinc.com"), ("Acme Plumbing LLC", "Naperville, IL")]
+    assert r.duplicates == 1 and r.skipped == 1
+    assert r.company_column == "Company Name" and "Owner phone" not in r.hint_columns
+
+
+def test_import_without_header_uses_first_column():
+    from leadscout.importer import parse_upload
+
+    r = parse_upload("list.csv", b"Joe Inc;Chicago IL\nAcme LLC;Naperville\n")
+    assert r.rows[0] == ("Joe Inc", "Chicago IL") and len(r.rows) == 2
+
+
+def test_import_xlsx():
+    import io
+
+    from openpyxl import Workbook
+
+    from leadscout.importer import parse_upload
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Account", "Industry", "City"])
+    ws.append(["Lakeshore Dental Group", "Dental", "Chicago"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = parse_upload("crm.xlsx", buf.getvalue())
+    assert r.rows == [("Lakeshore Dental Group", "Dental, Chicago")]
+
+
+def test_import_rejects_old_xls():
+    from leadscout.importer import ImportError_, parse_upload
+
+    with pytest.raises(ImportError_):
+        parse_upload("old.xls", b"\xd0\xcf\x11\xe0")
+
+
+def test_prometheus_parse_sums_labels():
+    from leadscout.metrics import _parse_prometheus
+
+    text = (
+        "# HELP x\n"
+        'vllm:num_requests_running{engine="0",model_name="leadscout"} 2.0\n'
+        'vllm:num_requests_running{engine="1",model_name="leadscout"} 1.0\n'
+        "vllm:kv_cache_usage_perc 0.37\n"
+    )
+    m = _parse_prometheus(text)
+    assert m["vllm:num_requests_running"] == 3.0 and m["vllm:kv_cache_usage_perc"] == 0.37
+
+
+def _finish(store, company, seconds, batch="B1", end_offset=0):
+    from datetime import datetime, timedelta, timezone
+
+    lid = store.add(company, "", "t@x.example", batch)
+    store.claim_next()
+    end = datetime.now(timezone.utc) + timedelta(seconds=end_offset)
+    start = end - timedelta(seconds=seconds)
+    store.complete(lid, {"input_name": company}, [])
+    store._conn.execute("UPDATE leads SET started_at=?, finished_at=? WHERE id=?",
+                        (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"), lid))
+    return lid
+
+
+def test_speed_deviation_and_cost(monkeypatch):
+    from leadscout import metrics
+    from leadscout.db import LeadStore
+
+    s = LeadStore(":memory:")
+    for i in range(10):
+        _finish(s, f"Old {i}", 100)
+    sp = metrics.speed_metrics(s)
+    assert sp["normal_s"] == 100 and sp["deviation_pct"] == 0
+    s2 = LeadStore(":memory:")
+    for i in range(10):
+        _finish(s2, f"Norm {i}", 100)
+    # durations() is ordered by finished_at; the 5 slow ones finish last
+    for i in range(5):
+        _finish(s2, f"Slow {i}", 200, end_offset=60 + i)
+    sp2 = metrics.speed_metrics(s2)
+    assert sp2["recent_s"] == 200 and sp2["deviation_pct"] == 100.0
+
+    s2.add("Waiting Co", "", "", "B1")
+    prog = metrics.batch_progress(s2, "B1")
+    assert prog["total"] == 16 and prog["queued"] == 1
+    cost = metrics.cost_metrics(s2, prog, sp2)
+    per_lead = 0.75 * sp2["normal_s"] / 3600
+    assert cost["per_lead"] == round(per_lead, 4)
+    assert cost["batch_estimate"] == round(per_lead * 16, 2)
+
+
+def test_speed_needs_baseline():
+    from leadscout import metrics
+    from leadscout.db import LeadStore
+
+    s = LeadStore(":memory:")
+    _finish(s, "One", 80)
+    sp = metrics.speed_metrics(s)
+    assert "deviation_pct" not in sp and sp["need"] == 5
+
+
+def test_engine_session_tracking():
+    from leadscout.db import LeadStore
+    from leadscout.metrics import cost_metrics
+    from leadscout.worker import track_engine
+
+    s = LeadStore(":memory:")
+    track_engine(s, True)
+    assert s.get_meta("engine_online_since")
+    c = cost_metrics(s, {"done": 0, "failed": 0, "queued": 0, "running": 0, "total": 0}, {})
+    assert c["session_s"] >= 0 and "session_cost" in c
+    track_engine(s, False)
+    assert s.get_meta("engine_online_since") is None
+
+
+def test_agent_reports_steps():
+    steps = []
+    llm = FakeLLM(
+        [
+            [_call("1", "web_search", {"query": "Joe Inc"})],
+            [_call("2", "fetch_page", {"url": "https://joeinc.example/about"})],
+            [_call("3", "submit_profile", {"company_name": "Joe Inc"})],
+        ]
+    )
+    funcs = {"web_search": lambda query, max_results=8: {"results": []}, "fetch_page": lambda url: {"text": "x"}}
+    LeadAgent(client=llm, tool_funcs=funcs, on_step=steps.append).run("Joe Inc")
+    assert "Searching the web: Joe Inc" in steps and "Reading joeinc.example" in steps
+    assert steps[-1] == "Writing the profile"
+
+
+def test_portal_import_dashboard_and_exports():
+    import base64
+    import io
+
+    from openpyxl import load_workbook
+
+    from leadscout import api
+
+    c = _client()
+    c.get(_sso_url(email="imp@cis.example", name="Imp"))
+    h = {"X-Requested-With": "leadscout"}
+    data = base64.b64encode(b"Company,City\nAlpha Co,Chicago\nBeta Co,=cmd|calc\n").decode()
+    r = c.post("/ui/api/import", json={"filename": "q4 list.csv", "data_b64": data, "batch": "Q4 test"}, headers=h)
+    assert r.status_code == 201 and r.json()["added"] == 2 and r.json()["batch"] == "Q4 test"
+    assert c.post("/ui/api/import", json={"filename": "x.csv", "data_b64": data}).status_code == 403  # CSRF
+
+    d = c.get("/ui/api/dashboard?batch=Q4%20test").json()
+    assert d["progress"]["total"] == 2 and d["progress"]["queued"] == 2 and d["engine"] == {"online": False}
+    assert any(b["batch"] == "Q4 test" for b in d["batches"])
+
+    rows = c.get("/ui/api/leads?batch=Q4%20test").json()
+    beta = next(x for x in rows if x["company"] == "Beta Co")
+    # finish Beta with a profile whose summary begins with a formula
+    api.store._conn.execute("UPDATE leads SET status='running' WHERE id=?", (beta["id"],))
+    api.store.complete(beta["id"], {"input_name": "Beta Co", "summary": "=HYPERLINK(\"http://x\")"}, [])
+    csv_text = c.get("/ui/api/export.csv?batch=Q4%20test").text
+    assert "Beta Co" in csv_text and "Alpha Co" not in csv_text  # finished results only
+    assert "'=HYPERLINK" in csv_text
+    x = c.get("/ui/api/export.xlsx?batch=Q4%20test")
+    assert x.status_code == 200 and "leads_Q4_test.xlsx" in x.headers["content-disposition"]
+    ws = load_workbook(io.BytesIO(x.content)).active
+    assert ws.max_row == 2 and str(ws.cell(2, 17).value).startswith("'=")
+
+
+def test_import_rejects_garbage():
+    c = _client()
+    c.get(_sso_url(email="g@cis.example"))
+    h = {"X-Requested-With": "leadscout"}
+    assert c.post("/ui/api/import", json={"filename": "a.csv", "data_b64": "!!!notb64"}, headers=h).status_code == 400
+    import base64
+
+    empty = base64.b64encode(b"Company\n,\n").decode()
+    assert c.post("/ui/api/import", json={"filename": "a.csv", "data_b64": empty}, headers=h).status_code == 400

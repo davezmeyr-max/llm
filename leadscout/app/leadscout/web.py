@@ -14,17 +14,21 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .state import build_csv, llm_online, store
+from .importer import ImportError_, parse_upload
+from .metrics import dashboard
+from .state import build_csv, build_xlsx, llm_online, store
 from .web_page import LOGIN_PAGE, PORTAL_PAGE
 
 router = APIRouter()
@@ -137,6 +141,11 @@ def portal(request: Request):
     return HTMLResponse(PORTAL_PAGE, headers={"Cache-Control": "no-store"})
 
 
+@router.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
+
+
 @router.get("/sso", include_in_schema=False)
 def sso(request: Request, email: str = "", name: str = "", exp: str = "", sig: str = ""):
     _portal_enabled()
@@ -212,18 +221,29 @@ def ui_status(user: dict = Depends(require_session)) -> dict:  # noqa: ARG001
     return {"queue": store.counts(), "llm_online": llm_online()}
 
 
+def _batch_label(prefix: str) -> str:
+    return f"{prefix} {datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M')}"
+
+
+@router.get("/ui/api/dashboard", include_in_schema=False)
+def ui_dashboard(batch: str | None = None, user: dict = Depends(require_session)) -> dict:  # noqa: ARG001
+    return dashboard(store, batch or None)
+
+
 @router.get("/ui/api/leads", include_in_schema=False)
 def ui_leads(
     status: str | None = Query(None, pattern="^(queued|running|done|failed)$"),
+    batch: str | None = None,
     user: dict = Depends(require_session),  # noqa: ARG001
 ) -> list[dict]:
-    rows = store.list(status, 500)
+    rows = store.list(status, 1000, batch=batch or None)
     out = []
     for r in rows:
         p = r.get("profile") or {}
         out.append(
             {
                 "id": r["id"], "company": r["company"], "hints": r["hints"], "status": r["status"],
+                "batch": r.get("batch", ""), "step": r.get("current_step", ""),
                 "submitted_by": r.get("submitted_by", ""), "updated_at": r["updated_at"],
                 "company_name": p.get("company_name"), "confidence": p.get("confidence"), "error": r.get("error"),
             }
@@ -242,7 +262,36 @@ def ui_lead(lead_id: int, user: dict = Depends(require_session)) -> dict:  # noq
 
 @router.post("/ui/api/leads", status_code=201, dependencies=[Depends(require_csrf)], include_in_schema=False)
 def ui_add(body: UIBulk, user: dict = Depends(require_session)) -> dict:
-    return {"ids": [store.add(x.company, x.hints, user["email"]) for x in body.leads]}
+    batch = _batch_label("Manual")
+    return {"batch": batch, "ids": [store.add(x.company, x.hints, user["email"], batch) for x in body.leads]}
+
+
+class UIImport(BaseModel):
+    filename: str = Field(min_length=1, max_length=200)
+    data_b64: str = Field(min_length=4, max_length=7_000_000)
+    batch: str = Field("", max_length=100)
+
+
+@router.post("/ui/api/import", status_code=201, dependencies=[Depends(require_csrf)], include_in_schema=False)
+def ui_import(body: UIImport, user: dict = Depends(require_session)) -> dict:
+    try:
+        data = base64.b64decode(body.data_b64, validate=True)
+    except ValueError as exc:
+        raise HTTPException(400, "file data was not valid base64") from exc
+    try:
+        result = parse_upload(body.filename, data)
+    except ImportError_ as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not result.rows:
+        raise HTTPException(400, f"no usable rows found (skipped {result.skipped} without a company name)")
+    stem = body.filename.rsplit(".", 1)[0][:60]
+    batch = body.batch.strip() or _batch_label(stem)
+    for company, hints in result.rows:
+        store.add(company, hints, user["email"], batch)
+    return {
+        "batch": batch, "added": len(result.rows), "skipped": result.skipped, "duplicates": result.duplicates,
+        "truncated": result.truncated, "company_column": result.company_column, "hint_columns": result.hint_columns,
+    }
 
 
 @router.post("/ui/api/leads/{lead_id}/retry", dependencies=[Depends(require_csrf)], include_in_schema=False)
@@ -252,8 +301,23 @@ def ui_retry(lead_id: int, user: dict = Depends(require_session)) -> dict:  # no
     return {"id": lead_id, "status": "queued"}
 
 
+def _export_name(batch: str | None, ext: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", batch).strip("_") if batch else "all"
+    return f"leads_{base or 'all'}.{ext}"
+
+
 @router.get("/ui/api/export.csv", include_in_schema=False)
-def ui_export(user: dict = Depends(require_session)):  # noqa: ARG001
+def ui_export(batch: str | None = None, user: dict = Depends(require_session)):  # noqa: ARG001
     return PlainTextResponse(
-        build_csv(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="leads.csv"'}
+        build_csv(batch or None), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{_export_name(batch, "csv")}"'},
+    )
+
+
+@router.get("/ui/api/export.xlsx", include_in_schema=False)
+def ui_export_xlsx(batch: str | None = None, user: dict = Depends(require_session)):  # noqa: ARG001
+    return Response(
+        build_xlsx(batch or None),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{_export_name(batch, "xlsx")}"'},
     )

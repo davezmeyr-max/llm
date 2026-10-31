@@ -71,6 +71,11 @@ Set `PUBLIC_HOSTNAME` in `.env` (DNS A record pointing at this box, ports 80/443
 `setup-cpu-box.sh`. Caddy serves the **Lead Research portal** at `https://<PUBLIC_HOSTNAME>/` with an
 automatic certificate: submit leads, watch progress, open profiles, export CSV.
 
+The portal shows five live gauges (batch progress with ETA, GPU engine load, server load, speed
+versus the normal time per lead, and estimated cost per lead and per batch), a "working on" line with
+the agent's current step, CSV/Excel import (company column plus city/state/website/industry as hints,
+duplicates skipped, up to 5,000 rows), and CSV/Excel export of finished results per batch.
+
 Sign-in: your website hands signed-in users over with a short-lived signed link (`SSO_SECRET`), or an
 administrator signs in at `/login` with `ADMIN_PASSWORD`. Both secrets are generated into `.env` by the
 setup script. For Base44 see [integrations/base44.md](integrations/base44.md).

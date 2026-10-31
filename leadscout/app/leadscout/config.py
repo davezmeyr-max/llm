@@ -47,6 +47,10 @@ class Settings:
     admin_password: str = field(default_factory=lambda: os.getenv("ADMIN_PASSWORD", ""))
     session_hours: int = field(default_factory=lambda: int(os.getenv("SESSION_HOURS", "12")))
 
+    # Cost estimate (Hostinger RTX PRO 6000, 2 cores / 64 GB: 75 credits/hour, ~100 credits = EUR 1)
+    gpu_cost_per_hour: float = field(default_factory=lambda: float(os.getenv("GPU_COST_PER_HOUR", "0.75")))
+    cost_currency: str = field(default_factory=lambda: os.getenv("COST_CURRENCY", "€"))
+
     # Worker
     poll_interval_s: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL_S", "10")))
     notify_webhook: str = field(default_factory=lambda: os.getenv("NOTIFY_WEBHOOK_URL", ""))

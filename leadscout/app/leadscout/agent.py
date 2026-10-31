@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlparse
 
 from openai import OpenAI
 from pydantic import ValidationError
@@ -73,13 +74,46 @@ def _wire(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
 
 
+def describe_step(name: str, args: dict[str, Any]) -> str:
+    """Human-readable line for the live 'now working on' display."""
+    if name == "web_search":
+        return f"Searching the web: {args.get('query', '')}"
+    if name == "fetch_page":
+        url = str(args.get("url", ""))
+        host = urlparse(url).netloc or url
+        return f"Reading {host}"
+    if name == "registry_search":
+        where = args.get("jurisdiction_code") or "all states"
+        return f"Checking state registry ({where}): {args.get('name', '')}"
+    if name == "registry_company":
+        return f"Reading registration record {args.get('jurisdiction_code', '')} {args.get('company_number', '')}"
+    if name == "dns_lookup":
+        return f"Checking email platform for {args.get('domain', '')}"
+    if name == "submit_profile":
+        return "Writing the profile"
+    return name
+
+
 class LeadAgent:
-    def __init__(self, client: OpenAI | None = None, tool_funcs: dict | None = None) -> None:
+    def __init__(
+        self,
+        client: OpenAI | None = None,
+        tool_funcs: dict | None = None,
+        on_step: Callable[[str], None] | None = None,
+    ) -> None:
         self.client = client or OpenAI(
             base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=settings.llm_timeout_s
         )
         self.tool_funcs = tool_funcs or TOOL_FUNCS
+        self.on_step = on_step
         self.trace: list[dict[str, Any]] = []
+
+    def _report(self, text: str) -> None:
+        if self.on_step:
+            try:
+                self.on_step(text)
+            except Exception:  # noqa: BLE001 - progress display must never break research
+                log.debug("on_step failed", exc_info=True)
 
     def _chat(self, messages: list[dict[str, Any]], force_submit: bool) -> Any:
         kwargs: dict[str, Any] = {
@@ -108,6 +142,7 @@ class LeadAgent:
             if force and step == settings.max_steps:
                 messages.append({"role": "user", "content": "Tool budget used up. Call submit_profile now with what you have."})
             _shrink_old_pages(messages)
+            self._report("Thinking" if step == 0 else "Deciding the next step")
             resp = self._chat(messages, force_submit=force)
             msg = resp.choices[0].message
             calls = msg.tool_calls or []
@@ -135,6 +170,7 @@ class LeadAgent:
                     result: dict[str, Any] = {"error": f"arguments were not valid JSON: {exc}"}
                     args = {}
                 else:
+                    self._report(describe_step(name, args))
                     if name == "submit_profile":
                         args["input_name"] = company
                         try:
