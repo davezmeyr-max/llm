@@ -358,3 +358,11 @@ def test_logout_clears_session():
     c.get(_sso_url(email="z@cis.example"))
     c.get("/logout")
     assert c.get("/ui/api/me").status_code == 401
+
+
+def test_session_cookie_secure_only_over_https():
+    c = _client()
+    r = c.get(_sso_url(email="http@cis.example"))
+    assert "secure" not in r.headers["set-cookie"].lower()
+    r = _client().get(_sso_url(email="https@cis.example"), headers={"X-Forwarded-Proto": "https"})
+    assert "secure" in r.headers["set-cookie"].lower()

@@ -67,7 +67,7 @@ docker build -t "leadscout:${TAG}" ./app
 PROFILE_ARGS=()
 if grep -qE '^PUBLIC_HOSTNAME=.+' .env; then
   PROFILE_ARGS=(--profile public)
-  echo "    publishing the API at https://$(grep -E '^PUBLIC_HOSTNAME=' .env | cut -d= -f2-) via Caddy"
+  echo "    publishing the portal and API at $(grep -E "^PUBLIC_HOSTNAME=" .env | cut -d= -f2-) via Caddy"
 fi
 docker compose "${PROFILE_ARGS[@]}" up -d --force-recreate
 sleep 5

@@ -90,13 +90,18 @@ def verify_sso(email: str, name: str, exp: str, sig: str) -> bool:
     return True
 
 
-def _set_session(resp, email: str, name: str) -> None:
+def _is_https(request: Request) -> bool:
+    # Caddy sets X-Forwarded-Proto; plain-HTTP access (e.g. by IP address) must not get a Secure cookie.
+    return request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip() == "https"
+
+
+def _set_session(resp, request: Request, email: str, name: str) -> None:
     resp.set_cookie(
         COOKIE,
         make_session(email, name),
         max_age=settings.session_hours * 3600,
         httponly=True,
-        secure=bool(settings.public_hostname),
+        secure=_is_https(request),
         samesite="lax",
         path="/",
     )
@@ -133,7 +138,7 @@ def portal(request: Request):
 
 
 @router.get("/sso", include_in_schema=False)
-def sso(email: str = "", name: str = "", exp: str = "", sig: str = ""):
+def sso(request: Request, email: str = "", name: str = "", exp: str = "", sig: str = ""):
     _portal_enabled()
     email = email.strip().lower()
     if not verify_sso(email, name, exp, sig):
@@ -142,7 +147,7 @@ def sso(email: str = "", name: str = "", exp: str = "", sig: str = ""):
             status_code=401,
         )
     resp = RedirectResponse("/", status_code=303)
-    _set_session(resp, email, name[:80])
+    _set_session(resp, request, email, name[:80])
     return resp
 
 
@@ -174,7 +179,7 @@ def login(body: LoginIn, request: Request):
             _login_failures[ip].append(now)
         raise HTTPException(401, "wrong password")
     resp = PlainTextResponse("ok")
-    _set_session(resp, "admin", "Admin")
+    _set_session(resp, request, "admin", "Admin")
     return resp
 
 
