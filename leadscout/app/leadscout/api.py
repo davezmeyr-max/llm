@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .db import LeadStore
 
-app = FastAPI(title="LeadScout", version="0.1.1")
+# No /docs, /redoc or /openapi.json: the API can be published on the internet behind Caddy.
+app = FastAPI(title="LeadScout", version="0.1.2", docs_url=None, redoc_url=None, openapi_url=None)
 store = LeadStore(settings.db_path)
 
 

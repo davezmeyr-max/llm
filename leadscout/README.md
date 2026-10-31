@@ -65,6 +65,12 @@ interrupted lead is requeued automatically.
 | `POST /leads/{id}/retry` | Re-run a lead |
 | `GET /export.csv` | Flat CSV for CRM import |
 
+## Connect your website (optional)
+
+Set `PUBLIC_HOSTNAME` in `.env` (DNS A record pointing at this box, ports 80/443 open) and re-run
+`setup-cpu-box.sh`. Caddy publishes the API over HTTPS with an automatic certificate. Your site's
+backend calls it with the API token. For Base44 see [integrations/base44.md](integrations/base44.md).
+
 ## Guardrails built in
 
 - Business facts only. The prompt forbids home addresses, personal phones, family and other personal-life details.

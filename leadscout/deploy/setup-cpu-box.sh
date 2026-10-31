@@ -60,7 +60,12 @@ echo "==> Build and start"
 TAG="$(python3 -c 'import re;print(re.search(r"\"(.+)\"",open("app/leadscout/__init__.py").read()).group(1))')"
 export LEADSCOUT_TAG="$TAG"
 docker build -t "leadscout:${TAG}" ./app
-docker compose up -d --force-recreate
+PROFILE_ARGS=()
+if grep -qE '^PUBLIC_HOSTNAME=.+' .env; then
+  PROFILE_ARGS=(--profile public)
+  echo "    publishing the API at https://$(grep -E '^PUBLIC_HOSTNAME=' .env | cut -d= -f2-) via Caddy"
+fi
+docker compose "${PROFILE_ARGS[@]}" up -d --force-recreate
 sleep 5
 docker run --rm "leadscout:${TAG}" python -c "import leadscout; print('image version', leadscout.__version__)"
 curl -fsS http://127.0.0.1:8090/health && echo

@@ -1,0 +1,27 @@
+# Public HTTPS front for the LeadScout API. Certificates are issued automatically (Let's Encrypt).
+# Only the API routes are passed through; every request still needs the API bearer token.
+{$PUBLIC_HOSTNAME} {
+	encode gzip
+
+	@api path /health /status /leads /leads/* /export.csv
+	handle @api {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy 127.0.0.1:8090
+	}
+
+	handle {
+		respond 404
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+	}
+
+	log {
+		output stdout
+	}
+}

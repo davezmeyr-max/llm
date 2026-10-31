@@ -255,3 +255,13 @@ def test_api_auth_and_flow():
     csv_text = c.get("/export.csv", headers=h).text
     assert "Jane Doe (CEO)" in csv_text
     assert c.get(f"/leads/{lid}", headers=h).json()["status"] == "done"
+
+
+def test_api_docs_not_published():
+    from fastapi.testclient import TestClient
+
+    from leadscout import api
+
+    c = TestClient(api.app)
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert c.get(path).status_code == 404

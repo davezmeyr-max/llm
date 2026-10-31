@@ -16,7 +16,7 @@ services:
     cap_add: [CHOWN, SETGID, SETUID]
 
   api:
-    image: leadscout:${LEADSCOUT_TAG:-0.1.1}
+    image: leadscout:${LEADSCOUT_TAG:-0.1.2}
     build: ./app
     restart: unless-stopped
     network_mode: host
@@ -29,7 +29,7 @@ services:
       - leadscout-data:/data
 
   worker:
-    image: leadscout:${LEADSCOUT_TAG:-0.1.1}
+    image: leadscout:${LEADSCOUT_TAG:-0.1.2}
     build: ./app
     restart: unless-stopped
     network_mode: host
@@ -42,5 +42,23 @@ services:
       - leadscout-data:/data
     depends_on: [searxng]
 
+  # Optional: publish the API over HTTPS for your website's backend (Base44 backend functions).
+  # Enabled when PUBLIC_HOSTNAME is set in .env (setup-cpu-box.sh adds --profile public).
+  # Needs a DNS A record for PUBLIC_HOSTNAME pointing at this box and ports 80/443 open.
+  caddy:
+    image: caddy:2
+    profiles: [public]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [api]
+
 volumes:
   leadscout-data:
+  caddy-data:
+  caddy-config:
