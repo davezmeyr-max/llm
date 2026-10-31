@@ -710,3 +710,110 @@ def test_chat_system_prompt_states_identity():
 
     assert "Qwen3.6-27B" in SYSTEM_PROMPT and "own GPU server" in SYSTEM_PROMPT
     assert "not made by Google" in SYSTEM_PROMPT
+
+
+# ------------------------------------------------------------------ chat with web access (0.1.9)
+
+
+def _scripted_completions(monkeypatch, script):
+    from leadscout import chat
+
+    calls = []
+
+    async def fake_complete(messages, reasoning, tools):
+        calls.append({"messages": messages, "tools": [t["function"]["name"] for t in tools or []]})
+        return script.pop(0), 10
+
+    monkeypatch.setattr(chat, "complete_once", fake_complete)
+    return calls
+
+
+def _tool_call(cid, name, args):
+    return {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def test_web_chat_searches_reads_and_cites(monkeypatch):
+    from leadscout import tools
+
+    calls = _scripted_completions(
+        monkeypatch,
+        [
+            {"content": "", "tool_calls": [_tool_call("1", "web_search", {"query": "Microsoft CEO"})]},
+            {"content": "", "tool_calls": [_tool_call("2", "fetch_page", {"url": "https://news.microsoft.com/exec"})]},
+            {"content": "Satya Nadella is CEO.\n\nhttps://news.microsoft.com/exec"},
+        ],
+    )
+    monkeypatch.setitem(tools.TOOL_FUNCS, "web_search", lambda query, max_results=8: {"results": [{"url": "https://news.microsoft.com/exec"}]})
+    monkeypatch.setitem(tools.TOOL_FUNCS, "fetch_page", lambda url: {"url": url, "text": "Satya Nadella, Chairman and CEO"})
+    c = _client()
+    c.get(_sso_url(email="web1@cis.example"))
+    r = c.post("/ui/api/chat", json={"messages": [{"role": "user", "content": "Who runs Microsoft?"}], "web": True},
+               headers={"X-Requested-With": "leadscout"})
+    ev = _chat_events(r.text)
+    statuses = [e["s"] for e in ev if "s" in e]
+    assert "Searching the web: Microsoft CEO" in statuses and "Reading news.microsoft.com" in statuses
+    assert {"src": ["https://news.microsoft.com/exec"]} in ev
+    assert "".join(e.get("t", "") for e in ev).startswith("Satya Nadella is CEO.")
+    assert ev[-1] == {"done": True, "tokens": 30, "searches": 1, "pages": 1}
+    # web mode offers exactly the two read-only tools, and says so in the system prompt
+    assert calls[0]["tools"] == ["web_search", "fetch_page"]
+    assert "web_search" in calls[0]["messages"][0]["content"]
+    # tool results went back to the model, without private bookkeeping keys
+    assert all(not any(k.startswith("_") for k in m) for m in calls[2]["messages"])
+
+
+def test_web_chat_does_not_expose_other_tools(monkeypatch):
+    _scripted_completions(
+        monkeypatch,
+        [
+            {"content": "", "tool_calls": [_tool_call("1", "registry_search", {"name": "x"})]},
+            {"content": "Done."},
+        ],
+    )
+    c = _client()
+    c.get(_sso_url(email="web2@cis.example"))
+    r = c.post("/ui/api/chat", json={"messages": [{"role": "user", "content": "hi"}], "web": True},
+               headers={"X-Requested-With": "leadscout"})
+    ev = _chat_events(r.text)
+    assert "".join(e.get("t", "") for e in ev) == "Done." and ev[-1]["searches"] == 0
+
+
+def test_web_chat_forces_answer_after_round_limit(monkeypatch):
+    from leadscout import chat, tools
+
+    loop = [
+        {"content": "", "tool_calls": [_tool_call(str(i), "web_search", {"query": f"q{i}"})]}
+        for i in range(chat.MAX_WEB_ROUNDS)
+    ]
+    calls = _scripted_completions(monkeypatch, loop + [{"content": "Best answer I have."}])
+    monkeypatch.setitem(tools.TOOL_FUNCS, "web_search", lambda query, max_results=8: {"results": []})
+    c = _client()
+    c.get(_sso_url(email="web3@cis.example"))
+    r = c.post("/ui/api/chat", json={"messages": [{"role": "user", "content": "hi"}], "web": True},
+               headers={"X-Requested-With": "leadscout"})
+    ev = _chat_events(r.text)
+    assert "".join(e.get("t", "") for e in ev) == "Best answer I have."
+    assert calls[-1]["tools"] == []  # last round has no tools
+    assert calls[-1]["messages"][-1]["content"].startswith("Stop researching now")
+
+
+def test_web_chat_blocked_sites_stay_blocked(monkeypatch):
+    _scripted_completions(
+        monkeypatch,
+        [
+            {"content": "", "tool_calls": [_tool_call("1", "fetch_page", {"url": "https://www.linkedin.com/in/someone"})]},
+            {"content": "I can't open LinkedIn."},
+        ],
+    )
+    c = _client()
+    c.get(_sso_url(email="web4@cis.example"))
+    r = c.post("/ui/api/chat", json={"messages": [{"role": "user", "content": "open linkedin"}], "web": True},
+               headers={"X-Requested-With": "leadscout"})
+    ev = _chat_events(r.text)
+    assert not any("src" in e for e in ev)  # failed fetch is not cited as a source
+
+
+def test_plain_chat_says_web_is_off():
+    from leadscout.chat import NO_WEB_ADDENDUM, SYSTEM_PROMPT
+
+    assert "no internet access" not in SYSTEM_PROMPT and "no internet access" in NO_WEB_ADDENDUM

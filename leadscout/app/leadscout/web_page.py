@@ -97,6 +97,12 @@ border-bottom:1px solid var(--line)}.chathead h2{margin:0}
 .chatempty{margin:auto;text-align:center;color:var(--muted);max-width:460px;font-size:14px}
 .toggle{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
 .toggle input{width:auto;margin:0}
+.bubble .status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.bubble .status .dot{background:var(--accent);animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.25}}
+.bubble .srcs{margin-top:10px;font-size:13px;white-space:normal}.bubble .srcs ol{margin:4px 0 0;padding-left:20px}
+.bubble .srcs a{word-break:break-all}
+@media (prefers-reduced-motion:reduce){.bubble .status .dot{animation:none}}
 """
 
 PORTAL_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -142,11 +148,13 @@ PORTAL_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
  <div id="empty" class="muted small" style="padding:12px 4px;display:none">No leads yet.</div>
 </section>
 <section class="card chatcard mode-chat">
- <div class="chathead"><div><h2>Ask the model</h2><div class="small muted">Your own GPU model · no web access · chats are not saved</div></div>
-  <div class="row"><label class="toggle"><input type="checkbox" id="reason"> Think step by step (slower)</label>
+ <div class="chathead"><div><h2>Ask the model</h2><div class="small muted" id="chatsub">Your own GPU model · chats are not saved</div></div>
+  <div class="row"><label class="toggle"><input type="checkbox" id="web" checked> Search the web</label>
+   <label class="toggle"><input type="checkbox" id="reason"> Think step by step (slower)</label>
    <button class="ghost" id="newchat">New chat</button></div></div>
  <div class="msgs" id="msgs"><div class="chatempty" id="chatempty">Ask anything: draft an email, summarise text you paste in,
-  explain a security finding, brainstorm. For company research use Lead research, which can search the web.</div></div>
+  explain a security finding, brainstorm, or look something up with "Search the web" on.
+  For structured company profiles use Lead research.</div></div>
  <div class="composer"><textarea id="prompt" rows="2" maxlength="60000" placeholder="Message the model  (Enter to send, Shift+Enter for a new line)"></textarea>
   <button id="send">Send</button></div>
 </section>
@@ -348,11 +356,11 @@ async function send(){
  if(dash&&!dash.engine.online){addBubble('e','The model is offline. Start the GPU instance, then try again.');return}
  convo.push({role:'user',content:text});addBubble('u',text);$('prompt').value='';autosize();
  const bubble=addBubble('a','');const body=el('span',{class:'typing',text:'…'});bubble.append(body);
- let answer='',reasoning='',rDetails=null,rText=null,tokens=0,t0=performance.now();
+ let answer='',reasoning='',rDetails=null,rText=null,tokens=0,t0=performance.now(),srcs=[],stats=null,status=null,stepsList=null;
  streaming=new AbortController();setSending(true);
  try{
   const res=await fetch('/ui/api/chat',{method:'POST',signal:streaming.signal,
-   headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({messages:convo,reasoning:$('reason').checked})});
+   headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({messages:convo,reasoning:$('reason').checked,web:$('web').checked})});
   if(res.status===401){location.href='/login';return}
   if(!res.ok){let d='';try{d=(await res.json()).detail}catch(e){}throw new Error(typeof d==='string'&&d?d:Array.isArray(d)?d.map(x=>x.msg).join('; '):'HTTP '+res.status)}
   const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
@@ -360,17 +368,25 @@ async function send(){
    let i;while((i=buf.indexOf('\n\n'))>=0){const evt=buf.slice(0,i);buf=buf.slice(i+2);
     if(!evt.startsWith('data:'))continue;let msg;try{msg=JSON.parse(evt.slice(5))}catch(e){continue}
     if(msg.error)throw new Error(msg.error);
+    if(msg.s){if(!status){status=el('div',{class:'status'},el('span',{class:'dot'}),el('span',{}));body.replaceWith(status);
+      stepsList=el('ol',{});const det=el('details',{},el('summary',{text:'Research steps'}),stepsList);bubble.prepend(det)}
+     status.lastChild.textContent=msg.s+'…';stepsList.append(el('li',{text:msg.s}))}
+    if(msg.src)srcs=msg.src.filter(u=>safeUrl(u));
     if(msg.r){if(!rDetails){rText=el('div',{});rDetails=el('details',{},el('summary',{text:'Reasoning'}),rText);bubble.prepend(rDetails)}
      reasoning+=msg.r;rText.textContent=reasoning}
-    if(msg.t){answer+=msg.t;body.className='';body.textContent=answer}
-    if(msg.done)tokens=msg.tokens||0;
+    if(msg.t){answer+=msg.t;if(status){status.replaceWith(body);status=null}body.className='';body.textContent=answer}
+    if(msg.done){tokens=msg.tokens||0;stats=msg}
     scrollMsgs()}}
   if(!answer&&!reasoning)throw new Error('The model returned an empty reply.');
   convo.push({role:'assistant',content:answer});
   const secs=(performance.now()-t0)/1000;
   const copy=el('button',{text:'Copy',onclick:async()=>{try{await navigator.clipboard.writeText(answer);copy.textContent='Copied'}catch(e){copy.textContent='Copy failed'}}});
-  bubble.append(el('div',{class:'meta'},el('span',{text:`${secs.toFixed(1)}s${tokens?` · ${tokens} tokens · ${(tokens/secs).toFixed(0)} tok/s`:''}`}),copy))}
+  if(srcs.length)bubble.append(el('div',{class:'srcs'},el('b',{text:'Sources'}),
+   el('ol',{},srcs.map(u=>el('li',{},link(u,u.replace(/^https?:\/\//,'')))))));
+  const research=stats&&stats.searches!=null?` · ${stats.searches} search${stats.searches===1?'':'es'} · ${stats.pages} page${stats.pages===1?'':'s'}`:'';
+  bubble.append(el('div',{class:'meta'},el('span',{text:`${secs.toFixed(1)}s${research}${tokens?` · ${tokens} tokens`:''}`}),copy))}
  catch(e){
+  if(status){status.replaceWith(body);status=null}
   if(e.name==='AbortError'){if(answer){convo.push({role:'assistant',content:answer});bubble.append(el('div',{class:'meta',text:'Stopped'}))}
    else{bubble.remove();convo.pop()}}
   else{if(!answer)bubble.remove();convo.pop();addBubble('e',e.message)}}
@@ -381,6 +397,8 @@ $('prompt').oninput=autosize;
 $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send()}};
 $('newchat').onclick=()=>{if(streaming)streaming.abort();convo=[];$('msgs').replaceChildren($('chatempty'));$('chatempty').style.display='';$('prompt').focus()};
 
+try{const w=localStorage.getItem('ls_web');if(w!==null)$('web').checked=w==='1'}catch(e){}
+$('web').onchange=()=>{try{localStorage.setItem('ls_web',$('web').checked?'1':'0')}catch(e){}};
 setMode(location.hash==='#chat');
 loadMe();refresh();
 </script></body></html>"""
